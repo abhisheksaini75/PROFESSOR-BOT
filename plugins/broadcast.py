@@ -9,7 +9,81 @@ from pyrogram.errors.exceptions.bad_request_400 import MessageTooLong
 from database.users_chats_db import db
 from info import ADMINS
 
+# Helper function for broadcasting messages to a user
+async def broadcast_messages(user_id, message):
+    try:
+        await message.copy(chat_id=user_id)
+        return True, "Success"
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await broadcast_messages(user_id, message)
+    except InputUserDeactivated:
+        await db.delete_user(int(user_id))
+        logging.info(f"{user_id} - Removed from Database, since deleted account.")
+        return False, "Deleted"
+    except UserIsBlocked:
+        logging.info(f"{user_id} - Blocked the bot.")
+        return False, "Blocked"
+    except PeerIdInvalid:
+        await db.delete_user(int(user_id))
+        logging.info(f"{user_id} - PeerIdInvalid")
+        return False, "Error"
+    except Exception as e:
+        logging.error(f"Unexpected error for {user_id}: {e}")
+        return False, "Error"
 
+# Helper function for broadcasting messages to a group
+async def broadcast_messages_group(chat_id, message):
+    try:
+        await message.copy(chat_id=chat_id)
+        return True, "Success", ''
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await broadcast_messages_group(chat_id, message)
+    except Exception as e:
+        await db.delete_chat(int(chat_id))
+        logging.info(f"{chat_id} - PeerIdInvalid: {e}")
+        return False, "Deleted", f'{e}\n\n'
+
+# Helper function to clear junk users
+async def clear_junk(user_id, message):
+    try:
+        msg = await message.copy(chat_id=user_id)
+        await msg.delete(True)
+        return True, "Success"
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await clear_junk(user_id, message)
+    except InputUserDeactivated:
+        await db.delete_user(int(user_id))
+        logging.info(f"{user_id} - Removed from Database, since deleted account.")
+        return False, "Deleted"
+    except UserIsBlocked:
+        logging.info(f"{user_id} - Blocked the bot.")
+        return False, "Blocked"
+    except PeerIdInvalid:
+        await db.delete_user(int(user_id))
+        logging.info(f"{user_id} - PeerIdInvalid")
+        return False, "Error"
+    except Exception as e:
+        logging.error(f"Unexpected error for {user_id}: {e}")
+        return False, "Error"
+
+# Helper function to clear junk groups
+async def junk_group(chat_id, message):
+    try:
+        msg = await message.copy(chat_id=chat_id)
+        await msg.delete(True)
+        return True, "Success", ''
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await junk_group(chat_id, message)
+    except Exception as e:
+        await db.delete_chat(int(chat_id))
+        logging.info(f"{chat_id} - PeerIdInvalid: {e}")
+        return False, "Deleted", f'{e}\n\n'
+
+# Broadcast messages to all users
 @Client.on_message(filters.command("broadcast") & filters.user(ADMINS) & filters.reply)
 async def broadcast(bot, message):
     users = await db.get_all_users()
@@ -43,7 +117,7 @@ async def broadcast(bot, message):
     await sts.delete()
     await bot.send_message(message.chat.id, f"Broadcast Completed:\nTime Taken: {time_taken} seconds\n\nTotal Users: {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
 
-
+# Clear junk users from the database
 @Client.on_message(filters.command("clear_junk") & filters.user(ADMINS))
 async def remove_junkuser__db(bot, message):
     users = await db.get_all_users()
@@ -73,7 +147,7 @@ async def remove_junkuser__db(bot, message):
     await sts.delete()
     await bot.send_message(message.chat.id, f"Clear Junk Completed:\nTime Taken: {time_taken} seconds\n\nTotal Users: {total_users}\nCompleted: {done} / {total_users}\nBlocked: {blocked}\nDeleted: {deleted}")
 
-
+# Broadcast messages to all groups
 @Client.on_message(filters.command("group_broadcast") & filters.user(ADMINS) & filters.reply)
 async def broadcast_group(bot, message):
     groups = await db.get_all_chats()
@@ -114,7 +188,7 @@ async def broadcast_group(bot, message):
         await message.reply_document('reason.txt', caption=f"Broadcast Completed:\nTime Taken: {time_taken} seconds\n\nTotal Groups: {total_groups}\nCompleted: {done} / {total_groups}\nSuccess: {success}\nDeleted: {deleted}")
         os.remove("reason.txt")
 
-
+# Clear junk groups from the database
 @Client.on_message(filters.command(["junk_group", "clear_junk_group"]) & filters.user(ADMINS))
 async def junk_clear_group(bot, message):
     groups = await db.get_all_chats()
@@ -122,87 +196,3 @@ async def junk_clear_group(bot, message):
     start_time = time.time()
     total_groups = await db.total_chat_count()
     done = 0
-    failed = ""
-    deleted = 0
-
-    async for group in groups:
-        pti, sh, ex = await junk_group(int(group['id']), message)
-        if not pti:
-            if sh == "Deleted":
-                deleted += 1
-                failed += ex
-                try:
-                    await bot.leave_chat(int(group['id']))
-                except Exception as e:
-                    logging.error(f"{e} > {group['id']}")
-
-        done += 1
-        if not done % 20:
-            await sts.edit(f"In progress:\n\nTotal Groups: {total_groups}\nCompleted: {done} / {total_groups}\nDeleted: {deleted}")
-
-    time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
-    await sts.delete()
-    try:
-        await bot.send_message(message.chat.id, f"Clear Junk Completed:\nTime Taken: {time_taken} seconds\n\nTotal Groups: {total_groups}\nCompleted: {done} / {total_groups}\nDeleted: {deleted}\n\nFailed Reason: {failed}")
-    except MessageTooLong:
-        with open('junk.txt', 'w+') as outfile:
-            outfile.write(failed)
-        await message.reply_document('junk.txt', caption=f"Clear Junk Completed:\nTime Taken: {time_taken} seconds\n\nTotal Groups: {total_groups}\nCompleted: {done} / {total_groups}\nDeleted: {deleted}")
-        os.remove("junk.txt")
-
-
-async def broadcast_messages_group(chat_id, message):
-    try:
-        await message.copy(chat_id=chat_id)
-        return True, "Success", ''
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await broadcast_messages_group(chat_id, message)
-    except Exception as e:
-        await db.delete_chat(int(chat_id))
-        logging.info(f"{chat_id} - PeerIdInvalid: {e}")
-        return False, "Deleted", f'{e}\n\n'
-
-
-async def junk_group(chat_id, message):
-    try:
-        msg = await message.copy(chat_id=chat_id)
-        await msg.delete(True)
-        return True, "Success", ''
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await junk_group(chat_id, message)
-    except Exception as e:
-        await db.delete_chat(int(chat_id))
-        logging.info(f"{chat_id} - PeerIdInvalid: {e}")
-        return False, "Deleted", f'{e}\n\n'
-
-
-async def clear_junk(user_id, message):
-    try:
-        msg = await message.copy(chat_id=user_id)
-        await msg.delete(True)
-        return True, "Success"
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await clear_junk(user_id, message)
-    except InputUserDeactivated:
-        await db.delete_user(int(user_id))
-        logging.info(f"{user_id} - Removed from Database, since deleted account.")
-        return False, "Deleted"
-    except UserIsBlocked:
-        logging.info(f"{user_id} - Blocked the bot.")
-        return False, "Blocked"
-    except PeerIdInvalid:
-        await db.delete_user(int(user_id))
-        logging.info(f"{user_id} - PeerIdInvalid")
-        return False, "Error"
-    except Exception as e:
-        logging.error(f"Unexpected error for {user_id}: {e}")
-        return False, "Error"
-
-
-async def broadcast_messages(user_id, message):
-    try:
-        await message.copy(chat_id=user_id)
-        return True, "Success"
